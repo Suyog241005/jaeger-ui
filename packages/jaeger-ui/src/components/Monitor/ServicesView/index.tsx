@@ -1,7 +1,7 @@
 // Copyright (c) 2021 The Jaeger Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { Row, Col, Input, Alert, Select } from 'antd';
 import { ActionFunctionAny, Action } from 'redux-actions';
 import _debounce from 'lodash/debounce';
@@ -41,12 +41,14 @@ import withRouteProps from '../../../utils/withRouteProps';
 
 import SearchableSelect from '../../common/SearchableSelect';
 import { useServices } from '../../../hooks/useTraceDiscovery';
+import { IWithRouteProps } from '../../../utils/withRouteProps';
+import { getUrl, parseMonitorUrl, MonitorUrlState } from '../url';
 
 type TReduxProps = {
   metrics: MetricsReduxState;
 };
 
-type TProps = TReduxProps & TDispatchProps;
+type TProps = TReduxProps & TDispatchProps & IWithRouteProps;
 
 type TDispatchProps = {
   fetchAggregatedServiceMetrics: ActionFunctionAny<Action<Promise<FetchAggregatedServiceMetricsResponse>>>;
@@ -124,7 +126,13 @@ const convertServiceErrorRateToPercentages = (serviceErrorRate: null | ServiceMe
 };
 
 export function MonitorATMServicesViewImpl(props: TProps) {
-  const { fetchAllServiceMetrics, fetchAggregatedServiceMetrics, metrics } = props;
+  const {
+    fetchAllServiceMetrics,
+    fetchAggregatedServiceMetrics,
+    metrics,
+    search: locationSearch,
+    navigate,
+  } = props;
   const { data: services = [], isLoading: servicesLoading } = useServices();
   const docsLink = getConfig().monitor?.docsLink;
   const graphDivWrapper = useRef<HTMLDivElement>(null);
@@ -133,15 +141,37 @@ export function MonitorATMServicesViewImpl(props: TProps) {
   const [serviceOpsMetrics, setServiceOpsMetrics] = useState<ServiceOpsMetrics[] | undefined>(undefined);
   const [searchOps, setSearchOps] = useState<string>('');
   const [graphXDomain, setGraphXDomain] = useState<number[]>([]);
+
+  const urlState: MonitorUrlState = useMemo(() => parseMonitorUrl(locationSearch), [locationSearch]);
+
   const [selectedService, setSelectedService] = useState<string | undefined>(
-    store.getString('lastAtmSearchService')
+    urlState.service || store.getString('lastAtmSearchService')
   );
   const [selectedSpanKind, setSelectedSpanKind] = useState<spanKinds>(() => {
-    const stored = store.getString('lastAtmSearchSpanKind');
+    const stored = urlState.spanKind || store.getString('lastAtmSearchSpanKind');
     return spanKindOptions.some(opt => opt.value === stored) ? (stored as spanKinds) : 'server';
   });
-  const [selectedTimeFrame, setSelectedTimeFrame] = useState<number>(
-    store.getNumber('lastAtmSearchTimeframe', oneHourInMilliSeconds)
+  const [selectedTimeFrame, setSelectedTimeFrame] = useState<number>(() => {
+    if (urlState.timeframe) {
+      const tf = parseInt(String(urlState.timeframe), 10);
+      if (!Number.isNaN(tf) && timeFrameOptions.some(opt => opt.value === tf)) {
+        return tf;
+      }
+    }
+    return store.getNumber('lastAtmSearchTimeframe', oneHourInMilliSeconds);
+  });
+
+  const updateUrl = useCallback(
+    (service?: string, spanKind?: string, timeframe?: number) => {
+      const nextUrl = getUrl({
+        service,
+        spanKind,
+        timeframe,
+        hideService: urlState.hideService,
+      });
+      navigate(nextUrl, { replace: true });
+    },
+    [navigate, urlState.hideService]
   );
 
   const calcGraphXDomain = useCallback(() => {
@@ -159,22 +189,34 @@ export function MonitorATMServicesViewImpl(props: TProps) {
     return selectedService || store.getString('lastAtmSearchService') || services[0];
   }, [services, selectedService]);
 
-  const handleServiceChange = useCallback((value: string) => {
-    setSelectedService(value);
-    trackSelectService(value);
-  }, []);
+  const handleServiceChange = useCallback(
+    (value: string) => {
+      setSelectedService(value);
+      trackSelectService(value);
+      updateUrl(value, selectedSpanKind, selectedTimeFrame);
+    },
+    [selectedSpanKind, selectedTimeFrame, updateUrl]
+  );
 
-  const handleSpanKindChange = useCallback((value: string) => {
-    setSelectedSpanKind(value as spanKinds);
-    const { label } = spanKindOptions.find(option => option.value === value)!;
-    trackSelectSpanKind(label);
-  }, []);
+  const handleSpanKindChange = useCallback(
+    (value: string) => {
+      setSelectedSpanKind(value as spanKinds);
+      const { label } = spanKindOptions.find(option => option.value === value)!;
+      trackSelectSpanKind(label);
+      updateUrl(selectedService, value, selectedTimeFrame);
+    },
+    [selectedService, selectedTimeFrame, updateUrl]
+  );
 
-  const handleTimeFrameChange = useCallback((value: number) => {
-    setSelectedTimeFrame(value);
-    const { label } = timeFrameOptions.find(option => option.value === value)!;
-    trackSelectTimeframe(label);
-  }, []);
+  const handleTimeFrameChange = useCallback(
+    (value: number) => {
+      setSelectedTimeFrame(value);
+      const { label } = timeFrameOptions.find(option => option.value === value)!;
+      trackSelectTimeframe(label);
+      updateUrl(selectedService, selectedSpanKind, value);
+    },
+    [selectedService, selectedSpanKind, updateUrl]
+  );
 
   const fetchMetrics = useCallback(() => {
     const currentService = selectedService || services[0];
@@ -232,6 +274,23 @@ export function MonitorATMServicesViewImpl(props: TProps) {
     calcGraphXDomain();
   }, [selectedTimeFrame, calcGraphXDomain]);
 
+  useEffect(() => {
+    if (urlState.service && urlState.service !== selectedService) {
+      setSelectedService(urlState.service);
+    }
+    if (urlState.spanKind && urlState.spanKind !== selectedSpanKind) {
+      if (spanKindOptions.some(opt => opt.value === urlState.spanKind)) {
+        setSelectedSpanKind(urlState.spanKind as spanKinds);
+      }
+    }
+    if (urlState.timeframe) {
+      const tf = parseInt(String(urlState.timeframe), 10);
+      if (!Number.isNaN(tf) && tf !== selectedTimeFrame && timeFrameOptions.some(opt => opt.value === tf)) {
+        setSelectedTimeFrame(tf);
+      }
+    }
+  }, [urlState, selectedService, selectedSpanKind, selectedTimeFrame]);
+
   const serviceLatencies = metrics.serviceMetrics ? metrics.serviceMetrics.service_latencies : null;
   const displayTimeUnit = calcDisplayTimeUnit(serviceLatencies);
   const serviceErrorRate = metrics.serviceMetrics ? metrics.serviceMetrics.service_error_rate : null;
@@ -259,23 +318,25 @@ export function MonitorATMServicesViewImpl(props: TProps) {
       )}
       <div className="service-view-container">
         <Row>
-          <Col span={6}>
-            <h2 className="service-selector-header">Service</h2>
-            <SearchableSelect
-              value={getSelectedService()}
-              onChange={handleServiceChange}
-              placeholder="Select A Service"
-              className="select-a-service-input"
-              disabled={metrics.operationMetricsLoading}
-              loading={metrics.operationMetricsLoading}
-            >
-              {services.map((service: string) => (
-                <Option key={service} value={service}>
-                  {service}
-                </Option>
-              ))}
-            </SearchableSelect>
-          </Col>
+          {!urlState.hideService && (
+            <Col span={6} data-testid="service-selector-col">
+              <h2 className="service-selector-header">Service</h2>
+              <SearchableSelect
+                value={getSelectedService()}
+                onChange={handleServiceChange}
+                placeholder="Select A Service"
+                className="select-a-service-input"
+                disabled={metrics.operationMetricsLoading}
+                loading={metrics.operationMetricsLoading}
+              >
+                {services.map((service: string) => (
+                  <Option key={service} value={service}>
+                    {service}
+                  </Option>
+                ))}
+              </SearchableSelect>
+            </Col>
+          )}
           <Col span={6}>
             <h2 className="span-kind-selector-header">Span Kind</h2>
             <SearchableSelect

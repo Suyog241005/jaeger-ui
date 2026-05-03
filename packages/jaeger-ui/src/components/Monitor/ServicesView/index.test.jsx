@@ -146,7 +146,7 @@ const state = {
   selectedService: undefined,
 };
 
-const props = mapStateToProps(state);
+const props = { ...mapStateToProps(state), search: '', navigate: vi.fn() };
 
 Date.now = jest.fn(() => 1487076708000); // Tue, 14 Feb 2017 12:51:48 GMT'
 
@@ -704,6 +704,43 @@ describe('<MonitorATMServicesView>', () => {
 
       expect(fetchAll).toHaveBeenCalled();
       expect(fetchAgg).toHaveBeenCalled();
+    });
+  });
+
+  describe('URL parameter initialization', () => {
+    it('initializes state from query parameters', () => {
+      const fetchAll = jest.fn();
+      const fetchAgg = jest.fn();
+      const queryProps = {
+        ...props,
+        search: '?service=orange&spanKind=client&timeframe=3600000',
+        fetchAllServiceMetrics: fetchAll,
+        fetchAggregatedServiceMetrics: fetchAgg,
+      };
+      useServices.mockReturnValue({ data: ['apple', 'orange'], isLoading: false });
+
+      cleanup();
+      renderWithRouter(<MonitorATMServicesView {...queryProps} />);
+
+      expect(fetchAll).toHaveBeenCalledWith(
+        'orange',
+        expect.objectContaining({ spanKind: 'client', lookback: 3600000 })
+      );
+    });
+
+    it('hides service selector when hideService is true', () => {
+      const queryProps = {
+        ...props,
+        search: '?hideService=true',
+        fetchAllServiceMetrics: vi.fn(),
+        fetchAggregatedServiceMetrics: vi.fn(),
+      };
+      useServices.mockReturnValue({ data: ['apple'], isLoading: false });
+
+      cleanup();
+      renderWithRouter(<MonitorATMServicesView {...queryProps} />);
+
+      expect(screen.queryByTestId('service-selector-col')).not.toBeInTheDocument();
     });
   });
 });
